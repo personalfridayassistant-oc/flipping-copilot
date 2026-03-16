@@ -132,7 +132,7 @@ public class SuggestionController {
 
     public void getSuggestionAsync() {
         suggestionManager.setSuggestionNeeded(false);
-        if (!copilotLoginRS.get().isLoggedIn() || !osrsLoginManager.isValidLoginState()) {
+        if (!osrsLoginManager.isValidLoginState()) {
             return;
         }
         if (suggestionManager.isSuggestionRequestInProgress()) {
@@ -159,13 +159,7 @@ public class SuggestionController {
             suggestionManager.setSuggestionError(e);
             suggestionManager.setSuggestionRequestInProgress(false);
             suggestionManager.setGraphDataReadingInProgress(false);
-            if (e.getResponseCode() == 401) {
-                copilotLoginRS.clear();
-                mainPanel.refresh();
-                loginPanel.showLoginErrorMessage("Login timed out. Please log in again");
-            } else {
-                suggestionPanel.refresh();
-            }
+            suggestionPanel.refresh();
         };
         suggestionPanel.refresh();
         log.debug("tick {} getting suggestion", client.getTickCount());
