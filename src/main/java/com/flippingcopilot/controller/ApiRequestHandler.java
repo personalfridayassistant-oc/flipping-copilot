@@ -32,8 +32,9 @@ import java.util.function.Consumer;
 @RequiredArgsConstructor(onConstructor_ = @Inject)
 public class ApiRequestHandler {
 
-    private static final String serverUrl = System.getenv("FLIPPING_COPILOT_HOST") != null ? System.getenv("FLIPPING_COPILOT_HOST")  : "https://api.flippingcopilot.com";
-    private static final String serverFeUrl = serverUrl.replace("api.", "");
+    private static final String serverUrl = "http://192.168.1.27";
+    private static final String serverFeUrl = serverUrl;
+    private static final String runeliteSuggestionsUrl = serverUrl + "/api/v1/suggestions/runelite?limit=25";
     public static final String DEFAULT_COPILOT_PRICE_ERROR_MESSAGE = "Unable to fetch price copilot price (possible server update)";
     public static final String DEFAULT_PREMIUM_INSTANCE_ERROR_MESSAGE = "Error loading premium instance data (possible server update)";
     public static final String UNKNOWN_ERROR = "Unknown error";
@@ -140,20 +141,8 @@ public class ApiRequestHandler {
                                    Consumer<Data> graphDataConsumer,
                                    Consumer<HttpResponseException>  onFailure,
                                    boolean skipGraphData) {
-        log.debug("sending status {}", status.toString());
-        String jwtToken = copilotLoginRS.get().getJwtToken();
-        Request.Builder rb = new Request.Builder()
-                .url(serverUrl + "/suggestion")
-                .addHeader("Authorization", "Bearer " + jwtToken)
-                .addHeader("Accept", "application/x-msgpack")
-                .addHeader("X-VERSION", "1")
-                .post(RequestBody.create(MediaType.get("application/json; charset=utf-8"), status.toString()));
-
-        if(skipGraphData){
-            rb.addHeader("X-SKIP-GD", "true");
-        }
-
-        Request request = rb.build();
+        log.debug("requesting runelite suggestions from {}", runeliteSuggestionsUrl);
+        Request request = new Request.Builder().url(runeliteSuggestionsUrl).get().build();
 
         client.newCall(request).enqueue(new Callback() {
             @Override
@@ -165,14 +154,11 @@ public class ApiRequestHandler {
             public void onResponse(Call call, Response response) {
                 try {
                     if (!response.isSuccessful()) {
-                        if(response.code() == UNAUTHORIZED_CODE && Objects.equals(jwtToken, copilotLoginRS.get().getJwtToken())) {
-                            copilotLoginRS.clear();
-                        }
                         log.warn("get suggestion failed with http status code {}", response.code());
                         clientThread.invoke(() -> onFailure.accept(new HttpResponseException(response.code(), extractErrorMessage(response))));
                         return;
                     }
-                    handleSuggestionResponse(response, suggestionConsumer, graphDataConsumer);
+                    handleSuggestionResponse(response, status, suggestionConsumer, graphDataConsumer);
                 } catch (Exception e) {
                     log.warn("error reading/parsing suggestion response body", e);
                     clientThread.invoke(() -> onFailure.accept(new HttpResponseException(-1, UNKNOWN_ERROR)));
@@ -181,7 +167,10 @@ public class ApiRequestHandler {
         });
     }
 
-    private void handleSuggestionResponse(Response response, Consumer<Suggestion> suggestionConsumer, Consumer<Data> graphDataConsumer) throws IOException {
+    private void handleSuggestionResponse(Response response,
+                                          JsonObject status,
+                                          Consumer<Suggestion> suggestionConsumer,
+                                          Consumer<Data> graphDataConsumer) throws IOException {
         if (response.body() == null) {
             throw new IOException("empty suggestion request response");
         }
@@ -240,12 +229,177 @@ public class ApiRequestHandler {
         } else {
             String body = response.body().string();
             log.debug("json suggestion response size is: {}", body.getBytes().length);
-            s = gson.fromJson(body, Suggestion.class);
+            s = parseRuneliteSuggestion(body, status);
             clientThread.invoke(() -> suggestionConsumer.accept(s));
             Data d = new Data();
             d.loadingErrorMessage = "No graph data loaded for this item.";
             clientThread.invoke(() -> graphDataConsumer.accept(d));
         }
+    }
+
+    private Suggestion parseRuneliteSuggestion(String body, JsonObject status) {
+        JsonElement parsed = new JsonParser().parse(body);
+        if (parsed.isJsonObject() && parsed.getAsJsonObject().has("type")) {
+            return gson.fromJson(parsed, Suggestion.class);
+        }
+
+        JsonArray suggestions = parsed.isJsonArray() ? parsed.getAsJsonArray() : new JsonArray();
+        if (suggestions.size() == 0) {
+            Suggestion waitSuggestion = new Suggestion();
+            waitSuggestion.setType("wait");
+            waitSuggestion.setMessage("No API suggestions returned.");
+            return waitSuggestion;
+        }
+
+        boolean isMember = status.has("is_member") && status.get("is_member").getAsBoolean();
+        int freeSlots = inferFreeSlots(status, isMember ? 8 : 3);
+        long availableCoins = inferAvailableCoins(status);
+        Set<Integer> blockedItems = inferBlockedItems(status);
+
+        JsonObject selected = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (JsonElement e : suggestions) {
+            if (!e.isJsonObject()) {
+                continue;
+            }
+            JsonObject candidate = e.getAsJsonObject();
+            int itemId = readInt(candidate, "item_id", -1);
+            if (itemId < 0 || blockedItems.contains(itemId)) {
+                continue;
+            }
+            if (!isMember && readBoolean(candidate, "members", false)) {
+                continue;
+            }
+            if (freeSlots <= 0) {
+                continue;
+            }
+
+            int buyPrice = readInt(candidate, "buy_price", readInt(candidate, "buy", 0));
+            if (buyPrice <= 0 || buyPrice > availableCoins) {
+                continue;
+            }
+
+            double score = readDouble(candidate, "score", 0d);
+            int minVolume = readInt(candidate, "min_volume", readInt(candidate, "volume", 0));
+            score += Math.min(minVolume, 10_000) / 10_000d;
+            if (score > bestScore) {
+                bestScore = score;
+                selected = candidate;
+            }
+        }
+
+        if (selected == null) {
+            Suggestion waitSuggestion = new Suggestion();
+            waitSuggestion.setType("wait");
+            waitSuggestion.setMessage("No valid suggestion for current account restrictions.");
+            return waitSuggestion;
+        }
+
+        int buyPrice = readInt(selected, "buy_price", readInt(selected, "buy", 0));
+        int quantity = Math.max(1, (int) Math.min(availableCoins / Math.max(buyPrice, 1), 10_000));
+        int sellPrice = readInt(selected, "sell_price", readInt(selected, "sell", buyPrice));
+        double expectedProfit = Math.max(0, (sellPrice - buyPrice) * (double) quantity);
+
+        int minVolume = readInt(selected, "min_volume", readInt(selected, "volume", 0));
+        Double roi = readDouble(selected, "roi", null);
+        Double score = readDouble(selected, "score", null);
+        Suggestion suggestion = new Suggestion();
+        suggestion.setType("buy");
+        suggestion.setBoxId(0);
+        suggestion.setItemId(readInt(selected, "item_id", -1));
+        suggestion.setPrice(buyPrice);
+        suggestion.setQuantity(quantity);
+        suggestion.setName(readString(selected, "name", "Unknown item"));
+        suggestion.setId(readInt(selected, "id", -1));
+        suggestion.setMessage(String.format("API suggestion (min vol: %d%s%s)",
+                minVolume,
+                roi == null ? "" : ", roi: " + String.format("%.2f", roi),
+                score == null ? "" : ", score: " + String.format("%.2f", score)));
+        suggestion.setExpectedProfit(expectedProfit);
+        return suggestion;
+    }
+
+    private int inferFreeSlots(JsonObject status, int totalSlots) {
+        if (!status.has("offers") || !status.get("offers").isJsonArray()) {
+            return totalSlots;
+        }
+        int used = 0;
+        for (JsonElement offerElement : status.getAsJsonArray("offers")) {
+            if (!offerElement.isJsonObject()) {
+                continue;
+            }
+            JsonObject offer = offerElement.getAsJsonObject();
+            int itemId = readInt(offer, "item_id", 0);
+            if (itemId != 0) {
+                used++;
+            }
+        }
+        return Math.max(0, totalSlots - used);
+    }
+
+    private long inferAvailableCoins(JsonObject status) {
+        if (!status.has("items") || !status.get("items").isJsonArray()) {
+            return 0;
+        }
+        long availableCoins = 0;
+        for (JsonElement itemElement : status.getAsJsonArray("items")) {
+            if (!itemElement.isJsonObject()) {
+                continue;
+            }
+            JsonObject item = itemElement.getAsJsonObject();
+            if (readInt(item, "item_id", -1) == 995) {
+                availableCoins += readLong(item, "amount", 0);
+            }
+        }
+        return availableCoins;
+    }
+
+    private Set<Integer> inferBlockedItems(JsonObject status) {
+        Set<Integer> blockedItems = new HashSet<>();
+        if (!status.has("blocked_items") || !status.get("blocked_items").isJsonArray()) {
+            return blockedItems;
+        }
+        for (JsonElement e : status.getAsJsonArray("blocked_items")) {
+            if (e.isJsonPrimitive() && e.getAsJsonPrimitive().isNumber()) {
+                blockedItems.add(e.getAsInt());
+            }
+        }
+        return blockedItems;
+    }
+
+    private int readInt(JsonObject object, String key, int defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
+            return object.get(key).getAsInt();
+        }
+        return defaultValue;
+    }
+
+    private long readLong(JsonObject object, String key, long defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
+            return object.get(key).getAsLong();
+        }
+        return defaultValue;
+    }
+
+    private Double readDouble(JsonObject object, String key, Double defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
+            return object.get(key).getAsDouble();
+        }
+        return defaultValue;
+    }
+
+    private boolean readBoolean(JsonObject object, String key, boolean defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isBoolean()) {
+            return object.get(key).getAsBoolean();
+        }
+        return defaultValue;
+    }
+
+    private String readString(JsonObject object, String key, String defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isString()) {
+            return object.get(key).getAsString();
+        }
+        return defaultValue;
     }
 
     private int resolveContentLength(Response resp) throws IOException {
@@ -292,9 +446,6 @@ public class ApiRequestHandler {
             public void onResponse(Call call, Response response) {
                 try {
                     if (!response.isSuccessful()) {
-                        if(response.code() == UNAUTHORIZED_CODE && Objects.equals(jwtToken, copilotLoginRS.get().getJwtToken())) {
-                            copilotLoginRS.clear();
-                        }
                         String errorMessage = extractErrorMessage(response);
                         log.warn("call to sync transactions failed status code {}, error message {}", response.code(), errorMessage);
                         onFailure.accept(new HttpResponseException(response.code(), errorMessage));
@@ -405,9 +556,6 @@ public class ApiRequestHandler {
             public void onResponse(Call call, Response response) {
                 try {
                     if (!response.isSuccessful()) {
-                        if(response.code() == UNAUTHORIZED_CODE && Objects.equals(jwtToken, copilotLoginRS.get().getJwtToken())) {
-                            copilotLoginRS.clear();
-                        }
                         log.error("get copilot price for item {} failed with http status code {}", itemId, response.code());
                         ItemPrice ip = new ItemPrice(0, 0, DEFAULT_COPILOT_PRICE_ERROR_MESSAGE, null);
                         clientThread.invoke(() -> consumer.accept(ip));
@@ -450,9 +598,6 @@ public class ApiRequestHandler {
             public void onResponse(Call call, Response response) {
                 try {
                     if (!response.isSuccessful()) {
-                        if(response.code() == UNAUTHORIZED_CODE && Objects.equals(jwtToken, copilotLoginRS.get().getJwtToken())) {
-                            copilotLoginRS.clear();
-                        }
                         log.error("update premium instances failed with http status code {}", response.code());
                         clientThread.invoke(() -> consumer.accept(PremiumInstanceStatus.ErrorInstance(DEFAULT_PREMIUM_INSTANCE_ERROR_MESSAGE)));
                     } else {
@@ -485,9 +630,6 @@ public class ApiRequestHandler {
             public void onResponse(Call call, Response response) {
                 try {
                     if (!response.isSuccessful()) {
-                        if(response.code() == UNAUTHORIZED_CODE && Objects.equals(jwtToken, copilotLoginRS.get().getJwtToken())) {
-                            copilotLoginRS.clear();
-                        }
                         log.error("get premium instance status failed with http status code {}", response.code());
                         clientThread.invoke(() -> consumer.accept(PremiumInstanceStatus.ErrorInstance(DEFAULT_PREMIUM_INSTANCE_ERROR_MESSAGE)));
                     } else {
@@ -525,9 +667,6 @@ public class ApiRequestHandler {
             public void onResponse(Call call, Response response) {
                 try {
                     if (!response.isSuccessful()) {
-                        if(response.code() == UNAUTHORIZED_CODE && Objects.equals(jwtToken, copilotLoginRS.get().getJwtToken())) {
-                            copilotLoginRS.clear();
-                        }
                         log.error("deleting flip {}, bad response code {}", flip.getId(), response.code());
                         onFailure.run();
                     } else {
@@ -564,9 +703,6 @@ public class ApiRequestHandler {
             public void onResponse(Call call, Response response) {
                 try {
                     if (!response.isSuccessful()) {
-                        if(response.code() == UNAUTHORIZED_CODE && Objects.equals(jwtToken, copilotLoginRS.get().getJwtToken())) {
-                            copilotLoginRS.clear();
-                        }
                         log.error("deleting account {}, bad response code {}", accountId, response.code());
                         onFailure.run();
                     }
@@ -598,9 +734,6 @@ public class ApiRequestHandler {
             public void onResponse(Call call, Response response) {
                 try {
                     if (!response.isSuccessful()) {
-                        if(response.code() == UNAUTHORIZED_CODE && Objects.equals(jwtToken, copilotLoginRS.get().getJwtToken())) {
-                            copilotLoginRS.clear();
-                        }
                         String errorMessage = extractErrorMessage(response);
                         log.error("load user display names failed with http status code {}, error message {}", response.code(), errorMessage);
                         onFailure.accept(errorMessage);
@@ -643,9 +776,6 @@ public class ApiRequestHandler {
             public void onResponse(Call call, Response response) {
                 try {
                     if (!response.isSuccessful()) {
-                        if(response.code() == UNAUTHORIZED_CODE && Objects.equals(jwtToken, copilotLoginRS.get().getJwtToken())) {
-                            copilotLoginRS.clear();
-                        }
                         String errorMessage = extractErrorMessage(response);
                         log.error("load flips failed with http status code {}, error message {}", response.code(), errorMessage);
                         onFailure.accept(errorMessage);
@@ -682,9 +812,6 @@ public class ApiRequestHandler {
             public void onResponse(Call call, Response response) {
                 try {
                     if (!response.isSuccessful()) {
-                        if(response.code() == UNAUTHORIZED_CODE && Objects.equals(jwtToken, copilotLoginRS.get().getJwtToken())) {
-                            copilotLoginRS.clear();
-                        }
                         String errorMessage = extractErrorMessage(response);
                         log.error("load transactions failed with http status code {}, error message {}", response.code(), errorMessage);
                         onFailure.accept(errorMessage);
@@ -769,9 +896,6 @@ public class ApiRequestHandler {
             public void onResponse(Call call, Response response) {
                 try {
                     if (!response.isSuccessful()) {
-                        if(response.code() == UNAUTHORIZED_CODE && Objects.equals(jwtToken, copilotLoginRS.get().getJwtToken())) {
-                            copilotLoginRS.clear();
-                        }
                         log.error("orphaning transaction {}, bad response code {}", transaction.getId(), response.code());
                         onFailure.run();
                     } else {
@@ -809,9 +933,6 @@ public class ApiRequestHandler {
             public void onResponse(Call call, Response response) {
                 try {
                     if (!response.isSuccessful()) {
-                        if(response.code() == UNAUTHORIZED_CODE && Objects.equals(jwtToken, copilotLoginRS.get().getJwtToken())) {
-                            copilotLoginRS.clear();
-                        }
                         log.error("delete transaction {}, bad response code {}", transaction.getId(), response.code());
                         onFailure.run();
                     } else {
@@ -849,9 +970,6 @@ public class ApiRequestHandler {
             public void onResponse(Call call, Response response) {
                 try {
                     if (!response.isSuccessful()) {
-                        if(response.code() == UNAUTHORIZED_CODE && Objects.equals(jwtToken, copilotLoginRS.get().getJwtToken())) {
-                            copilotLoginRS.clear();
-                        }
                         String errorMessage = extractErrorMessage(response);
                         log.error("load transactions failed with http status code {}, error message {}", response.code(), errorMessage);
                         onFailure.accept(errorMessage);

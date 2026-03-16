@@ -44,7 +44,7 @@ public class MainPanel extends PluginPanel {
         setBorder(BorderFactory.createEmptyBorder(5, 6, 5, 6));
         add(buildLoggedInView(), "logged-in");
         add(buildLoggedOutView(), "logged-out");
-        cardLayout.show(this, copilotLoginRS.get().isLoggedIn() ? "logged-in" : "logged-out");
+        cardLayout.show(this, "logged-in");
 
     }
 
@@ -74,14 +74,8 @@ public class MainPanel extends PluginPanel {
             SwingUtilities.invokeLater(this::refresh);
             return;
         }
-        if (copilotLoginRS.get().isLoggedIn()) {
-            showLoggedInView();
-            copilotPanel.refresh();
-        } else {
-            showLoggedOutView();
-            loginPanel.refresh();
-            copilotPanel.suggestionPanel.refresh();
-        }
+        showLoggedInView();
+        copilotPanel.refresh();
     }
 
     private void showLoggedOutView() {
@@ -118,8 +112,8 @@ public class MainPanel extends PluginPanel {
         topBar.add(discord);
 
         JLabel website = buildTopBarUriButton(UIUtilities.internetIcon,
-                "Flipping Copilot website",
-                "https://flippingcopilot.com");
+                "Suggestions API",
+                "http://192.168.1.27/api/v1/state");
         topBar.add(website);
 
 
