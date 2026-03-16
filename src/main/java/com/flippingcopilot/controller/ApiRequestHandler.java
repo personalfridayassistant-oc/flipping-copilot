@@ -8,9 +8,10 @@ import com.google.gson.reflect.TypeToken;
 import com.google.inject.Singleton;
 import lombok.RequiredArgsConstructor;
 import lombok.Setter;
-import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.callback.ClientThread;
 import okhttp3.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.inject.Inject;
 import java.io.BufferedInputStream;
@@ -27,11 +28,14 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 
-@Slf4j
 @Singleton
 @RequiredArgsConstructor(onConstructor_ = @Inject)
 public class ApiRequestHandler {
 
+<<<<<<< codex/refactor-flipping-copilot-plugin-for-api-usage-6kyqx1
+    private static final Logger log = LoggerFactory.getLogger(ApiRequestHandler.class);
+=======
+>>>>>>> main
     private static final String serverUrl = "http://192.168.1.27";
     private static final String serverFeUrl = serverUrl;
     private static final String runeliteSuggestionsUrl = serverUrl + "/api/v1/suggestions/runelite?limit=25";
@@ -41,6 +45,7 @@ public class ApiRequestHandler {
     public static final int UNAUTHORIZED_CODE = 401;
     // dependencies
     private final OkHttpClient client;
+    private final OkHttpClient localSuggestionClient = new OkHttpClient.Builder().build();
     private final Gson gson;
     private final CopilotLoginRS copilotLoginRS;
     private final SuggestionPreferencesManager preferencesManager;
@@ -148,11 +153,16 @@ public class ApiRequestHandler {
                 .get()
                 .build();
 
-        client.newCall(request).enqueue(new Callback() {
+        localSuggestionClient.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
+                String errorMessage = e.getMessage();
+                if (e instanceof javax.net.ssl.SSLException) {
+                    errorMessage = "Local API TLS/SSL negotiation failed. Ensure the endpoint is plain HTTP and reachable at " + runeliteSuggestionsUrl;
+                }
                 log.warn("call to get suggestion failed", e);
-                clientThread.invoke(() -> onFailure.accept(new HttpResponseException(-1, UNKNOWN_ERROR)));
+                String finalErrorMessage = (errorMessage == null || errorMessage.isEmpty()) ? UNKNOWN_ERROR : errorMessage;
+                clientThread.invoke(() -> onFailure.accept(new HttpResponseException(-1, finalErrorMessage)));
             }
             @Override
             public void onResponse(Call call, Response response) {
@@ -228,6 +238,110 @@ public class ApiRequestHandler {
             int itemId = readInt(candidate, "item_id", -1);
             if (itemId < 0 || blockedItems.contains(itemId)) {
                 continue;
+<<<<<<< codex/refactor-flipping-copilot-plugin-for-api-usage-6kyqx1
+            }
+            if (!isMember && readBoolean(candidate, "members", false)) {
+                continue;
+            }
+            if (freeSlots <= 0) {
+                continue;
+            }
+
+            int buyPrice = readInt(candidate, "buy_price", readInt(candidate, "buy", 0));
+            if (buyPrice <= 0 || buyPrice > availableCoins) {
+                continue;
+            }
+
+            double score = readDouble(candidate, "score", 0d);
+            int minVolume = readInt(candidate, "min_volume", readInt(candidate, "volume", 0));
+            score += Math.min(minVolume, 10_000) / 10_000d;
+            if (score > bestScore) {
+                bestScore = score;
+                selected = candidate;
+            }
+        }
+
+        if (selected == null) {
+            Suggestion waitSuggestion = new Suggestion();
+            waitSuggestion.setType("wait");
+            waitSuggestion.setMessage("No valid suggestion for current account restrictions.");
+            return waitSuggestion;
+        }
+
+        int buyPrice = readInt(selected, "buy_price", readInt(selected, "buy", 0));
+        int quantity = Math.max(1, (int) Math.min(availableCoins / Math.max(buyPrice, 1), 10_000));
+        int sellPrice = readInt(selected, "sell_price", readInt(selected, "sell", buyPrice));
+        double expectedProfit = Math.max(0, (sellPrice - buyPrice) * (double) quantity);
+
+        int minVolume = readInt(selected, "min_volume", readInt(selected, "volume", 0));
+        Double roi = readDouble(selected, "roi", null);
+        Double score = readDouble(selected, "score", null);
+        Suggestion suggestion = new Suggestion();
+        suggestion.setType("buy");
+        suggestion.setBoxId(0);
+        suggestion.setItemId(readInt(selected, "item_id", -1));
+        suggestion.setPrice(buyPrice);
+        suggestion.setQuantity(quantity);
+        suggestion.setName(readString(selected, "name", "Unknown item"));
+        suggestion.setId(readInt(selected, "id", -1));
+        suggestion.setMessage(String.format("API suggestion (min vol: %d%s%s)",
+                minVolume,
+                roi == null ? "" : ", roi: " + String.format("%.2f", roi),
+                score == null ? "" : ", score: " + String.format("%.2f", score)));
+        suggestion.setExpectedProfit(expectedProfit);
+        return suggestion;
+    }
+
+
+    private JsonArray extractSuggestionsArray(JsonElement parsed) {
+        if (parsed != null && parsed.isJsonArray()) {
+            return parsed.getAsJsonArray();
+        }
+        if (parsed != null && parsed.isJsonObject()) {
+            JsonObject obj = parsed.getAsJsonObject();
+            if (obj.has("suggestions") && obj.get("suggestions").isJsonArray()) {
+                return obj.getAsJsonArray("suggestions");
+            }
+            if (obj.has("data") && obj.get("data").isJsonArray()) {
+                return obj.getAsJsonArray("data");
+            }
+        }
+        return new JsonArray();
+    }
+
+    private int inferFreeSlots(JsonObject status, int totalSlots) {
+        if (!status.has("offers") || !status.get("offers").isJsonArray()) {
+            return totalSlots;
+        }
+        int used = 0;
+        for (JsonElement offerElement : status.getAsJsonArray("offers")) {
+            if (!offerElement.isJsonObject()) {
+                continue;
+            }
+            JsonObject offer = offerElement.getAsJsonObject();
+            int itemId = readInt(offer, "item_id", 0);
+            if (itemId != 0) {
+                used++;
+            }
+        }
+        return Math.max(0, totalSlots - used);
+    }
+
+    private long inferAvailableCoins(JsonObject status) {
+        if (!status.has("items") || !status.get("items").isJsonArray()) {
+            return 0;
+        }
+        long availableCoins = 0;
+        for (JsonElement itemElement : status.getAsJsonArray("items")) {
+            if (!itemElement.isJsonObject()) {
+                continue;
+            }
+            JsonObject item = itemElement.getAsJsonObject();
+            if (readInt(item, "item_id", -1) == 995) {
+                availableCoins += readLong(item, "amount", 0);
+            }
+        }
+=======
             }
             if (!isMember && readBoolean(candidate, "members", false)) {
                 continue;
@@ -495,6 +609,7 @@ public class ApiRequestHandler {
                 availableCoins += readLong(item, "amount", 0);
             }
         }
+>>>>>>> main
         return availableCoins;
     }
 
