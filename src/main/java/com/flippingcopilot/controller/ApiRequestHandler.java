@@ -32,7 +32,10 @@ import java.util.function.Consumer;
 @RequiredArgsConstructor(onConstructor_ = @Inject)
 public class ApiRequestHandler {
 
+<<<<<<< codex/refactor-flipping-copilot-plugin-for-api-usage-6kyqx1
     private static final Logger log = LoggerFactory.getLogger(ApiRequestHandler.class);
+=======
+>>>>>>> main
     private static final String serverUrl = "http://192.168.1.27";
     private static final String serverFeUrl = serverUrl;
     private static final String runeliteSuggestionsUrl = serverUrl + "/api/v1/suggestions/runelite?limit=25";
@@ -235,6 +238,7 @@ public class ApiRequestHandler {
             int itemId = readInt(candidate, "item_id", -1);
             if (itemId < 0 || blockedItems.contains(itemId)) {
                 continue;
+<<<<<<< codex/refactor-flipping-copilot-plugin-for-api-usage-6kyqx1
             }
             if (!isMember && readBoolean(candidate, "members", false)) {
                 continue;
@@ -337,6 +341,275 @@ public class ApiRequestHandler {
                 availableCoins += readLong(item, "amount", 0);
             }
         }
+=======
+            }
+            if (!isMember && readBoolean(candidate, "members", false)) {
+                continue;
+            }
+            if (freeSlots <= 0) {
+                continue;
+            }
+
+            int buyPrice = readInt(candidate, "buy_price", readInt(candidate, "buy", 0));
+            if (buyPrice <= 0 || buyPrice > availableCoins) {
+                continue;
+            }
+
+            double score = readDouble(candidate, "score", 0d);
+            int minVolume = readInt(candidate, "min_volume", readInt(candidate, "volume", 0));
+            score += Math.min(minVolume, 10_000) / 10_000d;
+            if (score > bestScore) {
+                bestScore = score;
+                selected = candidate;
+            }
+        }
+
+        if (selected == null) {
+            Suggestion waitSuggestion = new Suggestion();
+            waitSuggestion.setType("wait");
+            waitSuggestion.setMessage("No valid suggestion for current account restrictions.");
+            return waitSuggestion;
+        }
+
+        int buyPrice = readInt(selected, "buy_price", readInt(selected, "buy", 0));
+        int quantity = Math.max(1, (int) Math.min(availableCoins / Math.max(buyPrice, 1), 10_000));
+        int sellPrice = readInt(selected, "sell_price", readInt(selected, "sell", buyPrice));
+        double expectedProfit = Math.max(0, (sellPrice - buyPrice) * (double) quantity);
+
+        int minVolume = readInt(selected, "min_volume", readInt(selected, "volume", 0));
+        Double roi = readDouble(selected, "roi", null);
+        Double score = readDouble(selected, "score", null);
+        Suggestion suggestion = new Suggestion();
+        suggestion.setType("buy");
+        suggestion.setBoxId(0);
+        suggestion.setItemId(readInt(selected, "item_id", -1));
+        suggestion.setPrice(buyPrice);
+        suggestion.setQuantity(quantity);
+        suggestion.setName(readString(selected, "name", "Unknown item"));
+        suggestion.setId(readInt(selected, "id", -1));
+        suggestion.setMessage(String.format("API suggestion (min vol: %d%s%s)",
+                minVolume,
+                roi == null ? "" : ", roi: " + String.format("%.2f", roi),
+                score == null ? "" : ", score: " + String.format("%.2f", score)));
+        suggestion.setExpectedProfit(expectedProfit);
+        return suggestion;
+    }
+
+
+    private JsonArray extractSuggestionsArray(JsonElement parsed) {
+        if (parsed != null && parsed.isJsonArray()) {
+            return parsed.getAsJsonArray();
+        }
+        if (parsed != null && parsed.isJsonObject()) {
+            JsonObject obj = parsed.getAsJsonObject();
+            if (obj.has("suggestions") && obj.get("suggestions").isJsonArray()) {
+                return obj.getAsJsonArray("suggestions");
+            }
+            if (obj.has("data") && obj.get("data").isJsonArray()) {
+                return obj.getAsJsonArray("data");
+            }
+        }
+        return new JsonArray();
+    }
+
+    private int inferFreeSlots(JsonObject status, int totalSlots) {
+        if (!status.has("offers") || !status.get("offers").isJsonArray()) {
+            return totalSlots;
+        }
+        int used = 0;
+        for (JsonElement offerElement : status.getAsJsonArray("offers")) {
+            if (!offerElement.isJsonObject()) {
+                continue;
+            }
+            JsonObject offer = offerElement.getAsJsonObject();
+            int itemId = readInt(offer, "item_id", 0);
+            if (itemId != 0) {
+                used++;
+            }
+        }
+        return Math.max(0, totalSlots - used);
+    }
+
+    private long inferAvailableCoins(JsonObject status) {
+        if (!status.has("items") || !status.get("items").isJsonArray()) {
+            return 0;
+        }
+        long availableCoins = 0;
+        for (JsonElement itemElement : status.getAsJsonArray("items")) {
+            if (!itemElement.isJsonObject()) {
+                continue;
+            }
+            JsonObject item = itemElement.getAsJsonObject();
+            if (readInt(item, "item_id", -1) == 995) {
+                availableCoins += readLong(item, "amount", 0);
+            }
+        }
+        return availableCoins;
+    }
+
+    private Set<Integer> inferBlockedItems(JsonObject status) {
+        Set<Integer> blockedItems = new HashSet<>();
+        if (!status.has("blocked_items") || !status.get("blocked_items").isJsonArray()) {
+            return blockedItems;
+        }
+        for (JsonElement e : status.getAsJsonArray("blocked_items")) {
+            if (e.isJsonPrimitive() && e.getAsJsonPrimitive().isNumber()) {
+                blockedItems.add(e.getAsInt());
+            }
+        }
+        return blockedItems;
+    }
+
+    private int readInt(JsonObject object, String key, int defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
+            return object.get(key).getAsInt();
+        }
+        return defaultValue;
+    }
+
+    private long readLong(JsonObject object, String key, long defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
+            return object.get(key).getAsLong();
+        }
+        return defaultValue;
+    }
+
+    private Double readDouble(JsonObject object, String key, Double defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
+            return object.get(key).getAsDouble();
+        }
+        return defaultValue;
+    }
+
+    private boolean readBoolean(JsonObject object, String key, boolean defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isBoolean()) {
+            return object.get(key).getAsBoolean();
+        }
+        return defaultValue;
+    }
+
+    private String readString(JsonObject object, String key, String defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isString()) {
+            return object.get(key).getAsString();
+        }
+        return defaultValue;
+    }
+
+    private Suggestion parseRuneliteSuggestion(String body, JsonObject status) {
+        JsonElement parsed = new JsonParser().parse(body);
+        if (parsed.isJsonObject() && parsed.getAsJsonObject().has("type")) {
+            return gson.fromJson(parsed, Suggestion.class);
+        }
+
+        JsonArray suggestions = parsed.isJsonArray() ? parsed.getAsJsonArray() : new JsonArray();
+        if (suggestions.size() == 0) {
+            Suggestion waitSuggestion = new Suggestion();
+            waitSuggestion.setType("wait");
+            waitSuggestion.setMessage("No API suggestions returned.");
+            return waitSuggestion;
+        }
+
+        boolean isMember = status.has("is_member") && status.get("is_member").getAsBoolean();
+        int freeSlots = inferFreeSlots(status, isMember ? 8 : 3);
+        long availableCoins = inferAvailableCoins(status);
+        Set<Integer> blockedItems = inferBlockedItems(status);
+
+        JsonObject selected = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (JsonElement e : suggestions) {
+            if (!e.isJsonObject()) {
+                continue;
+            }
+            JsonObject candidate = e.getAsJsonObject();
+            int itemId = readInt(candidate, "item_id", -1);
+            if (itemId < 0 || blockedItems.contains(itemId)) {
+                continue;
+            }
+            if (!isMember && readBoolean(candidate, "members", false)) {
+                continue;
+            }
+            if (freeSlots <= 0) {
+                continue;
+            }
+
+            int buyPrice = readInt(candidate, "buy_price", readInt(candidate, "buy", 0));
+            if (buyPrice <= 0 || buyPrice > availableCoins) {
+                continue;
+            }
+
+            double score = readDouble(candidate, "score", 0d);
+            int minVolume = readInt(candidate, "min_volume", readInt(candidate, "volume", 0));
+            score += Math.min(minVolume, 10_000) / 10_000d;
+            if (score > bestScore) {
+                bestScore = score;
+                selected = candidate;
+            }
+        }
+
+        if (selected == null) {
+            Suggestion waitSuggestion = new Suggestion();
+            waitSuggestion.setType("wait");
+            waitSuggestion.setMessage("No valid suggestion for current account restrictions.");
+            return waitSuggestion;
+        }
+
+        int buyPrice = readInt(selected, "buy_price", readInt(selected, "buy", 0));
+        int quantity = Math.max(1, (int) Math.min(availableCoins / Math.max(buyPrice, 1), 10_000));
+        int sellPrice = readInt(selected, "sell_price", readInt(selected, "sell", buyPrice));
+        double expectedProfit = Math.max(0, (sellPrice - buyPrice) * (double) quantity);
+
+        int minVolume = readInt(selected, "min_volume", readInt(selected, "volume", 0));
+        Double roi = readDouble(selected, "roi", null);
+        Double score = readDouble(selected, "score", null);
+        Suggestion suggestion = new Suggestion();
+        suggestion.setType("buy");
+        suggestion.setBoxId(0);
+        suggestion.setItemId(readInt(selected, "item_id", -1));
+        suggestion.setPrice(buyPrice);
+        suggestion.setQuantity(quantity);
+        suggestion.setName(readString(selected, "name", "Unknown item"));
+        suggestion.setId(readInt(selected, "id", -1));
+        suggestion.setMessage(String.format("API suggestion (min vol: %d%s%s)",
+                minVolume,
+                roi == null ? "" : ", roi: " + String.format("%.2f", roi),
+                score == null ? "" : ", score: " + String.format("%.2f", score)));
+        suggestion.setExpectedProfit(expectedProfit);
+        return suggestion;
+    }
+
+    private int inferFreeSlots(JsonObject status, int totalSlots) {
+        if (!status.has("offers") || !status.get("offers").isJsonArray()) {
+            return totalSlots;
+        }
+        int used = 0;
+        for (JsonElement offerElement : status.getAsJsonArray("offers")) {
+            if (!offerElement.isJsonObject()) {
+                continue;
+            }
+            JsonObject offer = offerElement.getAsJsonObject();
+            int itemId = readInt(offer, "item_id", 0);
+            if (itemId != 0) {
+                used++;
+            }
+        }
+        return Math.max(0, totalSlots - used);
+    }
+
+    private long inferAvailableCoins(JsonObject status) {
+        if (!status.has("items") || !status.get("items").isJsonArray()) {
+            return 0;
+        }
+        long availableCoins = 0;
+        for (JsonElement itemElement : status.getAsJsonArray("items")) {
+            if (!itemElement.isJsonObject()) {
+                continue;
+            }
+            JsonObject item = itemElement.getAsJsonObject();
+            if (readInt(item, "item_id", -1) == 995) {
+                availableCoins += readLong(item, "amount", 0);
+            }
+        }
+>>>>>>> main
         return availableCoins;
     }
 
