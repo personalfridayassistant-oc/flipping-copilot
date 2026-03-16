@@ -32,10 +32,8 @@ import java.util.function.Consumer;
 @RequiredArgsConstructor(onConstructor_ = @Inject)
 public class ApiRequestHandler {
 
-<<<<<<< codex/refactor-flipping-copilot-plugin-for-api-usage-6kyqx1
     private static final Logger log = LoggerFactory.getLogger(ApiRequestHandler.class);
-=======
->>>>>>> main
+    
     private static final String serverUrl = "http://192.168.1.27";
     private static final String serverFeUrl = serverUrl;
     private static final String runeliteSuggestionsUrl = serverUrl + "/api/v1/suggestions/runelite?limit=25";
@@ -238,7 +236,7 @@ public class ApiRequestHandler {
             int itemId = readInt(candidate, "item_id", -1);
             if (itemId < 0 || blockedItems.contains(itemId)) {
                 continue;
-<<<<<<< codex/refactor-flipping-copilot-plugin-for-api-usage-6kyqx1
+
             }
             if (!isMember && readBoolean(candidate, "members", false)) {
                 continue;
@@ -341,7 +339,7 @@ public class ApiRequestHandler {
                 availableCoins += readLong(item, "amount", 0);
             }
         }
-=======
+
             }
             if (!isMember && readBoolean(candidate, "members", false)) {
                 continue;
@@ -609,7 +607,7 @@ public class ApiRequestHandler {
                 availableCoins += readLong(item, "amount", 0);
             }
         }
->>>>>>> main
+
         return availableCoins;
     }
 
