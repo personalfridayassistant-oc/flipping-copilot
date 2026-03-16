@@ -41,7 +41,10 @@ public class ApiRequestHandler {
     public static final int UNAUTHORIZED_CODE = 401;
     // dependencies
     private final OkHttpClient client;
-    private final OkHttpClient localSuggestionClient = new OkHttpClient.Builder().build();
+    private final OkHttpClient localSuggestionClient = new OkHttpClient.Builder()
+            .proxy(java.net.Proxy.NO_PROXY)
+            .connectionSpecs(java.util.Collections.singletonList(ConnectionSpec.CLEARTEXT))
+            .build();
     private final Gson gson;
     private final CopilotLoginRS copilotLoginRS;
     private final SuggestionPreferencesManager preferencesManager;
@@ -154,7 +157,7 @@ public class ApiRequestHandler {
             public void onFailure(Call call, IOException e) {
                 String errorMessage = e.getMessage();
                 if (e instanceof javax.net.ssl.SSLException) {
-                    errorMessage = "Local API TLS/SSL negotiation failed. Ensure the endpoint is plain HTTP and reachable at " + runeliteSuggestionsUrl;
+                    errorMessage = "Local API TLS/SSL negotiation failed. Verify your API listens on plain HTTP (no TLS) at " + runeliteSuggestionsUrl;
                 }
                 log.warn("call to get suggestion failed", e);
                 String finalErrorMessage = (errorMessage == null || errorMessage.isEmpty()) ? UNKNOWN_ERROR : errorMessage;
