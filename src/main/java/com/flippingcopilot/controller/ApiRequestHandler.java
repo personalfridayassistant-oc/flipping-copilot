@@ -7,7 +7,6 @@ import com.google.gson.*;
 import com.google.gson.reflect.TypeToken;
 import com.google.inject.Singleton;
 import lombok.RequiredArgsConstructor;
-import lombok.Setter;
 import net.runelite.client.callback.ClientThread;
 import okhttp3.*;
 import org.slf4j.Logger;
@@ -32,7 +31,6 @@ import java.util.function.Consumer;
 @RequiredArgsConstructor(onConstructor_ = @Inject)
 public class ApiRequestHandler {
 
-    private static final Logger log = LoggerFactory.getLogger(ApiRequestHandler.class);
     private static final Logger log = LoggerFactory.getLogger(ApiRequestHandler.class);
     private static final String serverUrl = "http://192.168.1.27";
     private static final String serverFeUrl = serverUrl;
@@ -338,7 +336,6 @@ public class ApiRequestHandler {
                 availableCoins += readLong(item, "amount", 0);
             }
         }
-
         return availableCoins;
     }
 

@@ -1,8 +1,6 @@
 package com.flippingcopilot.ui;
 
-import com.flippingcopilot.controller.CopilotLoginController;
 import com.flippingcopilot.rs.CopilotLoginRS;
-import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.PluginPanel;
 import net.runelite.client.util.ImageUtil;
@@ -18,7 +16,6 @@ import java.awt.image.BufferedImage;
 import static com.flippingcopilot.ui.UIUtilities.buildButton;
 
 @Singleton
-@Slf4j
 public class MainPanel extends PluginPanel {
 
     public static final int CONTENT_WIDTH = 242 - 12;
