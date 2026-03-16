@@ -142,7 +142,11 @@ public class ApiRequestHandler {
                                    Consumer<HttpResponseException>  onFailure,
                                    boolean skipGraphData) {
         log.debug("requesting runelite suggestions from {}", runeliteSuggestionsUrl);
-        Request request = new Request.Builder().url(runeliteSuggestionsUrl).get().build();
+        Request request = new Request.Builder()
+                .url(runeliteSuggestionsUrl)
+                .addHeader("Accept", "application/json")
+                .get()
+                .build();
 
         client.newCall(request).enqueue(new Callback() {
             @Override
@@ -174,67 +178,207 @@ public class ApiRequestHandler {
         if (response.body() == null) {
             throw new IOException("empty suggestion request response");
         }
-        String contentType = response.header("Content-Type");
-        Suggestion s;
-        if (contentType != null && contentType.contains("application/x-msgpack")) {
-            int contentLength = resolveContentLength(response);
-            int suggestionContentLength = resolveSuggestionContentLength(response);
-            int graphDataContentLength = contentLength - suggestionContentLength;
-            log.debug("msgpack suggestion response size is: {}, suggestion size is {}", contentLength, suggestionContentLength);
 
-            Data d = new Data();
-            try(InputStream is = response.body().byteStream()) {
-                // This is some bespoke handling to make the user experience better. We basically pack two different
-                // objects in the response body. The suggestion (first object) and the graph data (second
-                // object). The graph data can be a few kb, and we want the suggestion to be displayed
-                // immediately, without having to wait for the graph data to be loaded.
-
-                byte[] suggestionBytes = new byte[suggestionContentLength];
-                int bytesRead = is.readNBytes(suggestionBytes, 0, suggestionContentLength);
-                if (bytesRead != suggestionContentLength) {
-                    throw new IOException("failed to read complete suggestion content: " + bytesRead + " of " + suggestionContentLength + " bytes");
-                }
-                s = Suggestion.fromMsgPack(ByteBuffer.wrap(suggestionBytes));
-                log.debug("suggestion received");
-                clientThread.invoke(() -> suggestionConsumer.accept(s));
-
-                if (graphDataContentLength == 0) {
-                    d.loadingErrorMessage = "No graph data loaded for this item.";
-                } else {
-                    try {
-                        byte[] remainingBytes = is.readAllBytes();
-                        if (graphDataContentLength != remainingBytes.length) {
-                            log.error("the graph data bytes read {} doesn't match the expected bytes {}", bytesRead, graphDataContentLength);
-                            d.loadingErrorMessage = "There was an issue loading the graph data for this item.";
-                        } else {
-                            try {
-                                d = Data.fromMsgPack(ByteBuffer.wrap(remainingBytes));
-                                log.debug("graph data received");
-                            } catch (Exception e) {
-                                log.error("error deserializing graph data", e);
-                                d.loadingErrorMessage = "There was an issue loading the graph data for this item.";
-                            }
-                        }
-                    } catch (IOException e) {
-                        log.error("error on reading graph data bytes from the suggestion response", e);
-                        d.loadingErrorMessage = "There was an issue loading the graph data for this item.";
-                    }
-                }
-            }
-            if (s != null && "wait".equals(s.getType())){
-                d.fromWaitSuggestion = true;
-            }
-            Data finalD = d;
-            clientThread.invoke(() -> graphDataConsumer.accept(finalD));
-        } else {
-            String body = response.body().string();
-            log.debug("json suggestion response size is: {}", body.getBytes().length);
-            s = parseRuneliteSuggestion(body, status);
-            clientThread.invoke(() -> suggestionConsumer.accept(s));
-            Data d = new Data();
-            d.loadingErrorMessage = "No graph data loaded for this item.";
-            clientThread.invoke(() -> graphDataConsumer.accept(d));
+        String body = response.body().string();
+        log.debug("runelite suggestion response size is: {}", body.getBytes().length);
+        Suggestion suggestion;
+        try {
+            suggestion = parseRuneliteSuggestion(body, status);
+        } catch (Exception e) {
+            log.warn("failed to parse runelite suggestion response", e);
+            Suggestion waitSuggestion = new Suggestion();
+            waitSuggestion.setType("wait");
+            waitSuggestion.setMessage("Unable to parse API response.");
+            suggestion = waitSuggestion;
         }
+
+        Suggestion finalSuggestion = suggestion;
+        clientThread.invoke(() -> suggestionConsumer.accept(finalSuggestion));
+        Data d = new Data();
+        d.loadingErrorMessage = "No graph data loaded for this item.";
+        clientThread.invoke(() -> graphDataConsumer.accept(d));
+    }
+
+    private Suggestion parseRuneliteSuggestion(String body, JsonObject status) {
+        JsonElement parsed = new JsonParser().parse(body);
+        if (parsed.isJsonObject() && parsed.getAsJsonObject().has("type")) {
+            return gson.fromJson(parsed, Suggestion.class);
+        }
+
+        JsonArray suggestions = extractSuggestionsArray(parsed);
+        if (suggestions.size() == 0) {
+            Suggestion waitSuggestion = new Suggestion();
+            waitSuggestion.setType("wait");
+            waitSuggestion.setMessage("No API suggestions returned.");
+            return waitSuggestion;
+        }
+
+        boolean isMember = status.has("is_member") && status.get("is_member").getAsBoolean();
+        int freeSlots = inferFreeSlots(status, isMember ? 8 : 3);
+        long availableCoins = inferAvailableCoins(status);
+        Set<Integer> blockedItems = inferBlockedItems(status);
+
+        JsonObject selected = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (JsonElement e : suggestions) {
+            if (!e.isJsonObject()) {
+                continue;
+            }
+            JsonObject candidate = e.getAsJsonObject();
+            int itemId = readInt(candidate, "item_id", -1);
+            if (itemId < 0 || blockedItems.contains(itemId)) {
+                continue;
+            }
+            if (!isMember && readBoolean(candidate, "members", false)) {
+                continue;
+            }
+            if (freeSlots <= 0) {
+                continue;
+            }
+
+            int buyPrice = readInt(candidate, "buy_price", readInt(candidate, "buy", 0));
+            if (buyPrice <= 0 || buyPrice > availableCoins) {
+                continue;
+            }
+
+            double score = readDouble(candidate, "score", 0d);
+            int minVolume = readInt(candidate, "min_volume", readInt(candidate, "volume", 0));
+            score += Math.min(minVolume, 10_000) / 10_000d;
+            if (score > bestScore) {
+                bestScore = score;
+                selected = candidate;
+            }
+        }
+
+        if (selected == null) {
+            Suggestion waitSuggestion = new Suggestion();
+            waitSuggestion.setType("wait");
+            waitSuggestion.setMessage("No valid suggestion for current account restrictions.");
+            return waitSuggestion;
+        }
+
+        int buyPrice = readInt(selected, "buy_price", readInt(selected, "buy", 0));
+        int quantity = Math.max(1, (int) Math.min(availableCoins / Math.max(buyPrice, 1), 10_000));
+        int sellPrice = readInt(selected, "sell_price", readInt(selected, "sell", buyPrice));
+        double expectedProfit = Math.max(0, (sellPrice - buyPrice) * (double) quantity);
+
+        int minVolume = readInt(selected, "min_volume", readInt(selected, "volume", 0));
+        Double roi = readDouble(selected, "roi", null);
+        Double score = readDouble(selected, "score", null);
+        Suggestion suggestion = new Suggestion();
+        suggestion.setType("buy");
+        suggestion.setBoxId(0);
+        suggestion.setItemId(readInt(selected, "item_id", -1));
+        suggestion.setPrice(buyPrice);
+        suggestion.setQuantity(quantity);
+        suggestion.setName(readString(selected, "name", "Unknown item"));
+        suggestion.setId(readInt(selected, "id", -1));
+        suggestion.setMessage(String.format("API suggestion (min vol: %d%s%s)",
+                minVolume,
+                roi == null ? "" : ", roi: " + String.format("%.2f", roi),
+                score == null ? "" : ", score: " + String.format("%.2f", score)));
+        suggestion.setExpectedProfit(expectedProfit);
+        return suggestion;
+    }
+
+
+    private JsonArray extractSuggestionsArray(JsonElement parsed) {
+        if (parsed != null && parsed.isJsonArray()) {
+            return parsed.getAsJsonArray();
+        }
+        if (parsed != null && parsed.isJsonObject()) {
+            JsonObject obj = parsed.getAsJsonObject();
+            if (obj.has("suggestions") && obj.get("suggestions").isJsonArray()) {
+                return obj.getAsJsonArray("suggestions");
+            }
+            if (obj.has("data") && obj.get("data").isJsonArray()) {
+                return obj.getAsJsonArray("data");
+            }
+        }
+        return new JsonArray();
+    }
+
+    private int inferFreeSlots(JsonObject status, int totalSlots) {
+        if (!status.has("offers") || !status.get("offers").isJsonArray()) {
+            return totalSlots;
+        }
+        int used = 0;
+        for (JsonElement offerElement : status.getAsJsonArray("offers")) {
+            if (!offerElement.isJsonObject()) {
+                continue;
+            }
+            JsonObject offer = offerElement.getAsJsonObject();
+            int itemId = readInt(offer, "item_id", 0);
+            if (itemId != 0) {
+                used++;
+            }
+        }
+        return Math.max(0, totalSlots - used);
+    }
+
+    private long inferAvailableCoins(JsonObject status) {
+        if (!status.has("items") || !status.get("items").isJsonArray()) {
+            return 0;
+        }
+        long availableCoins = 0;
+        for (JsonElement itemElement : status.getAsJsonArray("items")) {
+            if (!itemElement.isJsonObject()) {
+                continue;
+            }
+            JsonObject item = itemElement.getAsJsonObject();
+            if (readInt(item, "item_id", -1) == 995) {
+                availableCoins += readLong(item, "amount", 0);
+            }
+        }
+        return availableCoins;
+    }
+
+    private Set<Integer> inferBlockedItems(JsonObject status) {
+        Set<Integer> blockedItems = new HashSet<>();
+        if (!status.has("blocked_items") || !status.get("blocked_items").isJsonArray()) {
+            return blockedItems;
+        }
+        for (JsonElement e : status.getAsJsonArray("blocked_items")) {
+            if (e.isJsonPrimitive() && e.getAsJsonPrimitive().isNumber()) {
+                blockedItems.add(e.getAsInt());
+            }
+        }
+        return blockedItems;
+    }
+
+    private int readInt(JsonObject object, String key, int defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
+            return object.get(key).getAsInt();
+        }
+        return defaultValue;
+    }
+
+    private long readLong(JsonObject object, String key, long defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
+            return object.get(key).getAsLong();
+        }
+        return defaultValue;
+    }
+
+    private Double readDouble(JsonObject object, String key, Double defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
+            return object.get(key).getAsDouble();
+        }
+        return defaultValue;
+    }
+
+    private boolean readBoolean(JsonObject object, String key, boolean defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isBoolean()) {
+            return object.get(key).getAsBoolean();
+        }
+        return defaultValue;
+    }
+
+    private String readString(JsonObject object, String key, String defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isString()) {
+            return object.get(key).getAsString();
+        }
+        return defaultValue;
     }
 
     private Suggestion parseRuneliteSuggestion(String body, JsonObject status) {
@@ -466,8 +610,11 @@ public class ApiRequestHandler {
             try {
                 String bodyStr = response.body().string();
                 JsonObject errorJson = gson.fromJson(bodyStr, JsonObject.class);
-                if (errorJson.has("message")) {
+                if (errorJson != null && errorJson.has("message")) {
                     return errorJson.get("message").getAsString();
+                }
+                if (bodyStr != null && !bodyStr.trim().isEmpty()) {
+                    return bodyStr;
                 }
             } catch (Exception e) {
                 log.warn("failed reading/parsing error message from http {} response body", response.code(), e);
