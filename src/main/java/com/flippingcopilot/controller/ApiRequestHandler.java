@@ -33,6 +33,7 @@ import java.util.function.Consumer;
 public class ApiRequestHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ApiRequestHandler.class);
+    private static final Logger log = LoggerFactory.getLogger(ApiRequestHandler.class);
     private static final String serverUrl = "http://192.168.1.27";
     private static final String serverFeUrl = serverUrl;
     private static final String runeliteSuggestionsUrl = serverUrl + "/api/v1/suggestions/runelite?limit=25";
@@ -337,6 +338,7 @@ public class ApiRequestHandler {
                 availableCoins += readLong(item, "amount", 0);
             }
         }
+
         return availableCoins;
     }
 
