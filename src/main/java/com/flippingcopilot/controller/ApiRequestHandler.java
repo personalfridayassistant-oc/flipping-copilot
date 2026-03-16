@@ -320,6 +320,7 @@ public class ApiRequestHandler {
             int itemId = readInt(offer, "item_id", 0);
             if (itemId != 0) {
                 used++;
+<<<<<<< codex/refactor-flipping-copilot-plugin-for-api-usage-b9ykgk
             }
         }
         return Math.max(0, totalSlots - used);
@@ -339,6 +340,27 @@ public class ApiRequestHandler {
                 availableCoins += readLong(item, "amount", 0);
             }
         }
+=======
+            }
+        }
+        return Math.max(0, totalSlots - used);
+    }
+
+    private long inferAvailableCoins(JsonObject status) {
+        if (status == null || !status.has("items") || !status.get("items").isJsonArray()) {
+            return 0;
+        }
+        long availableCoins = 0;
+        for (JsonElement itemElement : status.getAsJsonArray("items")) {
+            if (!itemElement.isJsonObject()) {
+                continue;
+            }
+            JsonObject item = itemElement.getAsJsonObject();
+            if (readInt(item, "item_id", -1) == 995) {
+                availableCoins += readLong(item, "amount", 0);
+            }
+        }
+>>>>>>> main
         return availableCoins;
     }
 
@@ -453,6 +475,7 @@ public class ApiRequestHandler {
         if (response.body() != null) {
             try {
                 String bodyStr = response.body().string();
+<<<<<<< codex/refactor-flipping-copilot-plugin-for-api-usage-b9ykgk
                 if (bodyStr == null || bodyStr.trim().isEmpty()) {
                     return UNKNOWN_ERROR;
                 }
@@ -471,6 +494,15 @@ public class ApiRequestHandler {
                     }
                 }
                 return bodyStr;
+=======
+                JsonObject errorJson = gson.fromJson(bodyStr, JsonObject.class);
+                if (errorJson != null && errorJson.has("message")) {
+                    return errorJson.get("message").getAsString();
+                }
+                if (bodyStr != null && !bodyStr.trim().isEmpty()) {
+                    return bodyStr;
+                }
+>>>>>>> main
             } catch (Exception e) {
                 log.warn("failed reading/parsing error message from http {} response body", response.code(), e);
             }
