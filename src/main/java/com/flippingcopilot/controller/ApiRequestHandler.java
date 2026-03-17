@@ -35,7 +35,8 @@ public class ApiRequestHandler {
     private static final Logger log = LoggerFactory.getLogger(ApiRequestHandler.class);
     private static final String serverUrl = System.getenv("FLIPPING_COPILOT_HOST") != null ? System.getenv("FLIPPING_COPILOT_HOST") : "http://192.168.1.27:3015";
     private static final String serverFeUrl = serverUrl;
-    private static final String runeliteSuggestionsUrl = serverUrl + "/api/v1/suggestions/runelite?limit=25";
+    private static final String runeliteSuggestionsPath = "/api/v1/suggestions";
+    private static final int runeliteSuggestionsLimit = 220;
     public static final String DEFAULT_COPILOT_PRICE_ERROR_MESSAGE = "Unable to fetch price copilot price (possible server update)";
     public static final String DEFAULT_PREMIUM_INSTANCE_ERROR_MESSAGE = "Error loading premium instance data (possible server update)";
     public static final String UNKNOWN_ERROR = "Unknown error";
@@ -146,9 +147,16 @@ public class ApiRequestHandler {
                                    Consumer<Data> graphDataConsumer,
                                    Consumer<HttpResponseException>  onFailure,
                                    boolean skipGraphData) {
-        log.debug("requesting runelite suggestions from {}", runeliteSuggestionsUrl);
+        boolean f2pOnly = status != null && status.has("f2p_only") && status.get("f2p_only").getAsBoolean();
+        HttpUrl.Builder suggestionUrlBuilder = Objects.requireNonNull(HttpUrl.parse(serverUrl + runeliteSuggestionsPath)).newBuilder()
+                .addQueryParameter("limit", String.valueOf(runeliteSuggestionsLimit));
+        if (f2pOnly) {
+            suggestionUrlBuilder.addQueryParameter("membersOnly", "false");
+        }
+        String suggestionUrl = suggestionUrlBuilder.build().toString();
+        log.debug("requesting runelite suggestions from {} (f2p_only={})", suggestionUrl, f2pOnly);
         Request request = new Request.Builder()
-                .url(runeliteSuggestionsUrl)
+                .url(suggestionUrl)
                 .addHeader("Accept", "application/json")
                 .addHeader("Cache-Control", "no-cache")
                 .addHeader("Pragma", "no-cache")
@@ -161,7 +169,7 @@ public class ApiRequestHandler {
             public void onFailure(Call call, IOException e) {
                 String errorMessage = e.getMessage();
                 if (e instanceof javax.net.ssl.SSLException) {
-                    errorMessage = "Local API SSL error. Use plain HTTP (not HTTPS): " + runeliteSuggestionsUrl;
+                    errorMessage = "Local API SSL error. Use plain HTTP (not HTTPS): " + suggestionUrl;
                 }
                 log.warn("call to get suggestion failed", e);
                 String finalErrorMessage = (errorMessage == null || errorMessage.isEmpty()) ? UNKNOWN_ERROR : errorMessage;
@@ -238,6 +246,7 @@ public class ApiRequestHandler {
         }
 
         boolean isMember = status != null && status.has("is_member") && status.get("is_member").getAsBoolean();
+        boolean f2pOnly = status != null && status.has("f2p_only") && status.get("f2p_only").getAsBoolean();
         int freeSlots = inferFreeSlots(status, isMember ? 8 : 3);
         long availableCoins = inferAvailableCoins(status);
         Set<Integer> blockedItems = inferBlockedItems(status);
@@ -249,18 +258,19 @@ public class ApiRequestHandler {
                 continue;
             }
             JsonObject candidate = e.getAsJsonObject();
-            int itemId = readInt(candidate, "item_id", -1);
+            int itemId = readInt(candidate, "item_id", readInt(candidate, "itemId", -1));
             if (itemId < 0 || blockedItems.contains(itemId)) {
                 continue;
             }
-            if (!isMember && readBoolean(candidate, "members", false)) {
+            if ((!isMember || f2pOnly) && readBoolean(candidate, "members", false)) {
                 continue;
             }
             if (freeSlots <= 0) {
                 continue;
             }
 
-            int buyPrice = readInt(candidate, "buy_price", readInt(candidate, "buy", 0));
+            int buyPrice = readInt(candidate, "buy_price",
+                    readInt(candidate, "latestLow", readInt(candidate, "buy", 0)));
             if (buyPrice <= 0 || buyPrice > availableCoins) {
                 continue;
             }
@@ -281,18 +291,23 @@ public class ApiRequestHandler {
             return waitSuggestion;
         }
 
-        int buyPrice = readInt(selected, "buy_price", readInt(selected, "buy", 0));
-        int quantity = Math.max(1, (int) Math.min(availableCoins / Math.max(buyPrice, 1), 10_000));
-        int sellPrice = readInt(selected, "sell_price", readInt(selected, "sell", buyPrice));
+        int buyPrice = readInt(selected, "buy_price",
+                readInt(selected, "latestLow", readInt(selected, "buy", 0)));
+        int apiLimit = readInt(selected, "limit", 10_000);
+        int maxQuantityFromCoins = (int) Math.min(availableCoins / Math.max(buyPrice, 1), 10_000);
+        int quantity = Math.max(1, apiLimit > 0 ? Math.min(maxQuantityFromCoins, apiLimit) : maxQuantityFromCoins);
+        int sellPrice = readInt(selected, "sell_price",
+                readInt(selected, "latestHigh", readInt(selected, "sell", buyPrice)));
         double expectedProfit = Math.max(0, (sellPrice - buyPrice) * (double) quantity);
 
-        int minVolume = readInt(selected, "min_volume", readInt(selected, "volume", 0));
+        int minVolume = readInt(selected, "min_volume",
+                readInt(selected, "volume", readInt(selected, "volHigh5m", 0) + readInt(selected, "volLow5m", 0)));
         Double roi = readDouble(selected, "roi", null);
         Double score = readDouble(selected, "score", null);
         Suggestion suggestion = new Suggestion();
         suggestion.setType("buy");
         suggestion.setBoxId(0);
-        suggestion.setItemId(readInt(selected, "item_id", -1));
+        suggestion.setItemId(readInt(selected, "item_id", readInt(selected, "itemId", -1)));
         suggestion.setPrice(buyPrice);
         suggestion.setQuantity(quantity);
         suggestion.setName(readString(selected, "name", "Unknown item"));
