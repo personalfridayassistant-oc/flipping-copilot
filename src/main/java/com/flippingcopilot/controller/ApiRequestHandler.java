@@ -33,7 +33,7 @@ import java.util.function.Consumer;
 public class ApiRequestHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ApiRequestHandler.class);
-    private static final String serverUrl = "http://192.168.1.27";
+    private static final String serverUrl = System.getenv("FLIPPING_COPILOT_HOST") != null ? System.getenv("FLIPPING_COPILOT_HOST") : "http://192.168.1.27:3015";
     private static final String serverFeUrl = serverUrl;
     private static final String runeliteSuggestionsUrl = serverUrl + "/api/v1/suggestions/runelite?limit=25";
     public static final String DEFAULT_COPILOT_PRICE_ERROR_MESSAGE = "Unable to fetch price copilot price (possible server update)";
@@ -152,6 +152,7 @@ public class ApiRequestHandler {
                 .addHeader("Accept", "application/json")
                 .addHeader("Cache-Control", "no-cache")
                 .addHeader("Pragma", "no-cache")
+                .addHeader("User-Agent", "FlippingCopilot/Local")
                 .get()
                 .build();
 

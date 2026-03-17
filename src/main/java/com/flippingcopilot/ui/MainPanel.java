@@ -110,7 +110,7 @@ public class MainPanel extends PluginPanel {
 
         JLabel website = buildTopBarUriButton(UIUtilities.internetIcon,
                 "Suggestions API",
-                "http://192.168.1.27/api/v1/state");
+                "http://192.168.1.27:3015/api/v1/state");
         topBar.add(website);
 
 
