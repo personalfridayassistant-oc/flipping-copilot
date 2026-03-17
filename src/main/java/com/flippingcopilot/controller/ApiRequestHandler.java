@@ -157,7 +157,7 @@ public class ApiRequestHandler {
             public void onFailure(Call call, IOException e) {
                 String errorMessage = e.getMessage();
                 if (e instanceof javax.net.ssl.SSLException) {
-                    errorMessage = "Local API TLS/SSL negotiation failed. Verify your API listens on plain HTTP (no TLS) at " + runeliteSuggestionsUrl;
+                    errorMessage = "Local API SSL error. Use plain HTTP (not HTTPS): " + runeliteSuggestionsUrl;
                 }
                 log.warn("call to get suggestion failed", e);
                 String finalErrorMessage = (errorMessage == null || errorMessage.isEmpty()) ? UNKNOWN_ERROR : errorMessage;
@@ -320,7 +320,6 @@ public class ApiRequestHandler {
             int itemId = readInt(offer, "item_id", 0);
             if (itemId != 0) {
                 used++;
-<<<<<<< codex/refactor-flipping-copilot-plugin-for-api-usage-b9ykgk
             }
         }
         return Math.max(0, totalSlots - used);
@@ -340,27 +339,6 @@ public class ApiRequestHandler {
                 availableCoins += readLong(item, "amount", 0);
             }
         }
-=======
-            }
-        }
-        return Math.max(0, totalSlots - used);
-    }
-
-    private long inferAvailableCoins(JsonObject status) {
-        if (status == null || !status.has("items") || !status.get("items").isJsonArray()) {
-            return 0;
-        }
-        long availableCoins = 0;
-        for (JsonElement itemElement : status.getAsJsonArray("items")) {
-            if (!itemElement.isJsonObject()) {
-                continue;
-            }
-            JsonObject item = itemElement.getAsJsonObject();
-            if (readInt(item, "item_id", -1) == 995) {
-                availableCoins += readLong(item, "amount", 0);
-            }
-        }
->>>>>>> main
         return availableCoins;
     }
 
@@ -395,6 +373,60 @@ public class ApiRequestHandler {
         if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
             return object.get(key).getAsDouble();
         }
+            }
+        }
+        return Math.max(0, totalSlots - used);
+    }
+
+    private long inferAvailableCoins(JsonObject status) {
+        if (status == null || !status.has("items") || !status.get("items").isJsonArray()) {
+            return 0;
+        }
+        long availableCoins = 0;
+        for (JsonElement itemElement : status.getAsJsonArray("items")) {
+            if (!itemElement.isJsonObject()) {
+                continue;
+            }
+            JsonObject item = itemElement.getAsJsonObject();
+            if (readInt(item, "item_id", -1) == 995) {
+                availableCoins += readLong(item, "amount", 0);
+            }
+        }
+        return availableCoins;
+    }
+
+    private Set<Integer> inferBlockedItems(JsonObject status) {
+        Set<Integer> blockedItems = new HashSet<>();
+        if (status == null || !status.has("blocked_items") || !status.get("blocked_items").isJsonArray()) {
+            return blockedItems;
+        }
+        for (JsonElement e : status.getAsJsonArray("blocked_items")) {
+            if (e.isJsonPrimitive() && e.getAsJsonPrimitive().isNumber()) {
+                blockedItems.add(e.getAsInt());
+            }
+        }
+        return blockedItems;
+    }
+
+    private int readInt(JsonObject object, String key, int defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
+            return object.get(key).getAsInt();
+        }
+        return defaultValue;
+    }
+
+    private long readLong(JsonObject object, String key, long defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
+            return object.get(key).getAsLong();
+        }
+        return defaultValue;
+    }
+
+    private Double readDouble(JsonObject object, String key, Double defaultValue) {
+        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
+            return object.get(key).getAsDouble();
+        }
+
         return defaultValue;
     }
 
@@ -475,7 +507,6 @@ public class ApiRequestHandler {
         if (response.body() != null) {
             try {
                 String bodyStr = response.body().string();
-<<<<<<< codex/refactor-flipping-copilot-plugin-for-api-usage-b9ykgk
                 if (bodyStr == null || bodyStr.trim().isEmpty()) {
                     return UNKNOWN_ERROR;
                 }
@@ -494,15 +525,25 @@ public class ApiRequestHandler {
                     }
                 }
                 return bodyStr;
-=======
-                JsonObject errorJson = gson.fromJson(bodyStr, JsonObject.class);
-                if (errorJson != null && errorJson.has("message")) {
-                    return errorJson.get("message").getAsString();
+                if (bodyStr == null || bodyStr.trim().isEmpty()) {
+                    return UNKNOWN_ERROR;
                 }
-                if (bodyStr != null && !bodyStr.trim().isEmpty()) {
-                    return bodyStr;
+
+                JsonElement parsed = new JsonParser().parse(bodyStr);
+                if (parsed != null && parsed.isJsonObject()) {
+                    JsonObject errorJson = parsed.getAsJsonObject();
+                    if (errorJson.has("message") && errorJson.get("message").isJsonPrimitive()) {
+                        return errorJson.get("message").getAsString();
+                    }
                 }
->>>>>>> main
+                if (parsed != null && parsed.isJsonPrimitive()) {
+                    JsonPrimitive primitive = parsed.getAsJsonPrimitive();
+                    if (primitive.isString()) {
+                        return primitive.getAsString();
+                    }
+                }
+                return bodyStr;
+
             } catch (Exception e) {
                 log.warn("failed reading/parsing error message from http {} response body", response.code(), e);
             }
