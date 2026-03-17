@@ -150,6 +150,8 @@ public class ApiRequestHandler {
         Request request = new Request.Builder()
                 .url(runeliteSuggestionsUrl)
                 .addHeader("Accept", "application/json")
+                .addHeader("Cache-Control", "no-cache")
+                .addHeader("Pragma", "no-cache")
                 .get()
                 .build();
 
@@ -167,6 +169,17 @@ public class ApiRequestHandler {
             @Override
             public void onResponse(Call call, Response response) {
                 try {
+                    if (response.code() == 304) {
+                        log.debug("runelite suggestions not modified (304), returning wait suggestion");
+                        Suggestion waitSuggestion = new Suggestion();
+                        waitSuggestion.setType("wait");
+                        waitSuggestion.setMessage("Suggestions not modified (304).");
+                        clientThread.invoke(() -> suggestionConsumer.accept(waitSuggestion));
+                        Data d = new Data();
+                        d.loadingErrorMessage = "No graph data loaded for this item.";
+                        clientThread.invoke(() -> graphDataConsumer.accept(d));
+                        return;
+                    }
                     if (!response.isSuccessful()) {
                         log.warn("get suggestion failed with http status code {}", response.code());
                         clientThread.invoke(() -> onFailure.accept(new HttpResponseException(response.code(), extractErrorMessage(response))));
@@ -452,7 +465,7 @@ public class ApiRequestHandler {
         try {
             JsonReader reader = new JsonReader(new StringReader(bodyStr));
             reader.setLenient(true);
-            JsonElement parsed = JsonParser.parseReader(reader);
+            JsonElement parsed = new JsonParser().parse(reader);
             if (parsed != null && parsed.isJsonObject()) {
                 JsonObject errorJson = parsed.getAsJsonObject();
                 if (errorJson.has("message") && errorJson.get("message").isJsonPrimitive()) {
