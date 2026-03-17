@@ -16,7 +16,6 @@ import javax.inject.Inject;
 import java.io.BufferedInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.lang.reflect.Type;
 import java.net.URLEncoder;
 import java.nio.ByteBuffer;
@@ -373,60 +372,6 @@ public class ApiRequestHandler {
         if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
             return object.get(key).getAsDouble();
         }
-            }
-        }
-        return Math.max(0, totalSlots - used);
-    }
-
-    private long inferAvailableCoins(JsonObject status) {
-        if (status == null || !status.has("items") || !status.get("items").isJsonArray()) {
-            return 0;
-        }
-        long availableCoins = 0;
-        for (JsonElement itemElement : status.getAsJsonArray("items")) {
-            if (!itemElement.isJsonObject()) {
-                continue;
-            }
-            JsonObject item = itemElement.getAsJsonObject();
-            if (readInt(item, "item_id", -1) == 995) {
-                availableCoins += readLong(item, "amount", 0);
-            }
-        }
-        return availableCoins;
-    }
-
-    private Set<Integer> inferBlockedItems(JsonObject status) {
-        Set<Integer> blockedItems = new HashSet<>();
-        if (status == null || !status.has("blocked_items") || !status.get("blocked_items").isJsonArray()) {
-            return blockedItems;
-        }
-        for (JsonElement e : status.getAsJsonArray("blocked_items")) {
-            if (e.isJsonPrimitive() && e.getAsJsonPrimitive().isNumber()) {
-                blockedItems.add(e.getAsInt());
-            }
-        }
-        return blockedItems;
-    }
-
-    private int readInt(JsonObject object, String key, int defaultValue) {
-        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
-            return object.get(key).getAsInt();
-        }
-        return defaultValue;
-    }
-
-    private long readLong(JsonObject object, String key, long defaultValue) {
-        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
-            return object.get(key).getAsLong();
-        }
-        return defaultValue;
-    }
-
-    private Double readDouble(JsonObject object, String key, Double defaultValue) {
-        if (object.has(key) && object.get(key).isJsonPrimitive() && object.get(key).getAsJsonPrimitive().isNumber()) {
-            return object.get(key).getAsDouble();
-        }
-
         return defaultValue;
     }
 
@@ -442,24 +387,6 @@ public class ApiRequestHandler {
             return object.get(key).getAsString();
         }
         return defaultValue;
-    }
-
-    private int resolveContentLength(Response resp) throws IOException {
-        try {
-            String cl = resp.header("Content-Length");
-            return Integer.parseInt(cl != null ? cl : "missing Content-Length header");
-        } catch (NumberFormatException  e) {
-            throw new IOException("Failed to parse response Content-Length", e);
-        }
-    }
-
-    private int resolveSuggestionContentLength(Response resp) throws IOException {
-        try {
-            String cl = resp.header("X-Suggestion-Content-Length");
-            return Integer.parseInt(cl != null ? cl : "missing Content-Length header");
-        } catch (NumberFormatException  e) {
-            throw new IOException("Failed to parse response Content-Length", e);
-        }
     }
 
     public void sendTransactionsAsync(List<Transaction> transactions, String displayName, BiConsumer<Integer, List<FlipV2>> onSuccess, Consumer<HttpResponseException> onFailure) {
@@ -525,25 +452,6 @@ public class ApiRequestHandler {
                     }
                 }
                 return bodyStr;
-                if (bodyStr == null || bodyStr.trim().isEmpty()) {
-                    return UNKNOWN_ERROR;
-                }
-
-                JsonElement parsed = new JsonParser().parse(bodyStr);
-                if (parsed != null && parsed.isJsonObject()) {
-                    JsonObject errorJson = parsed.getAsJsonObject();
-                    if (errorJson.has("message") && errorJson.get("message").isJsonPrimitive()) {
-                        return errorJson.get("message").getAsString();
-                    }
-                }
-                if (parsed != null && parsed.isJsonPrimitive()) {
-                    JsonPrimitive primitive = parsed.getAsJsonPrimitive();
-                    if (primitive.isString()) {
-                        return primitive.getAsString();
-                    }
-                }
-                return bodyStr;
-
             } catch (Exception e) {
                 log.warn("failed reading/parsing error message from http {} response body", response.code(), e);
             }
