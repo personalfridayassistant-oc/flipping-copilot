@@ -5,6 +5,7 @@ import com.flippingcopilot.rs.CopilotLoginRS;
 import com.flippingcopilot.ui.graph.model.Data;
 import com.google.gson.*;
 import com.google.gson.reflect.TypeToken;
+import com.google.gson.stream.JsonReader;
 import com.google.inject.Singleton;
 import lombok.RequiredArgsConstructor;
 import net.runelite.client.callback.ClientThread;
@@ -16,6 +17,7 @@ import javax.inject.Inject;
 import java.io.BufferedInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
+import java.io.StringReader;
 import java.lang.reflect.Type;
 import java.net.URLEncoder;
 import java.nio.ByteBuffer;
@@ -431,32 +433,43 @@ public class ApiRequestHandler {
     }
 
     private String extractErrorMessage(Response response) {
-        if (response.body() != null) {
-            try {
-                String bodyStr = response.body().string();
-                if (bodyStr == null || bodyStr.trim().isEmpty()) {
-                    return UNKNOWN_ERROR;
-                }
-
-                JsonElement parsed = new JsonParser().parse(bodyStr);
-                if (parsed != null && parsed.isJsonObject()) {
-                    JsonObject errorJson = parsed.getAsJsonObject();
-                    if (errorJson.has("message") && errorJson.get("message").isJsonPrimitive()) {
-                        return errorJson.get("message").getAsString();
-                    }
-                }
-                if (parsed != null && parsed.isJsonPrimitive()) {
-                    JsonPrimitive primitive = parsed.getAsJsonPrimitive();
-                    if (primitive.isString()) {
-                        return primitive.getAsString();
-                    }
-                }
-                return bodyStr;
-            } catch (Exception e) {
-                log.warn("failed reading/parsing error message from http {} response body", response.code(), e);
-            }
+        if (response.body() == null) {
+            return UNKNOWN_ERROR;
         }
-        return UNKNOWN_ERROR;
+
+        String bodyStr;
+        try {
+            bodyStr = response.body().string();
+        } catch (IOException e) {
+            log.warn("failed reading error message from http {} response body", response.code(), e);
+            return UNKNOWN_ERROR;
+        }
+
+        if (bodyStr == null || bodyStr.trim().isEmpty()) {
+            return UNKNOWN_ERROR;
+        }
+
+        try {
+            JsonReader reader = new JsonReader(new StringReader(bodyStr));
+            reader.setLenient(true);
+            JsonElement parsed = JsonParser.parseReader(reader);
+            if (parsed != null && parsed.isJsonObject()) {
+                JsonObject errorJson = parsed.getAsJsonObject();
+                if (errorJson.has("message") && errorJson.get("message").isJsonPrimitive()) {
+                    return errorJson.get("message").getAsString();
+                }
+            }
+            if (parsed != null && parsed.isJsonPrimitive()) {
+                JsonPrimitive primitive = parsed.getAsJsonPrimitive();
+                if (primitive.isString()) {
+                    return primitive.getAsString();
+                }
+            }
+        } catch (Exception e) {
+            log.debug("error body is not valid JSON for http {}, returning raw body", response.code());
+        }
+
+        return bodyStr;
     }
 
 
